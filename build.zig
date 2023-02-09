@@ -1,10 +1,26 @@
 const builtin = @import("builtin");
 const std = @import("std");
-const Builder = std.build.Builder;
 
 const system_sdk = @import("system_sdk.zig");
 
-pub fn build(b: *Builder) !void {
+pub const Package = struct {
+    module: *std.Build.Module,
+};
+
+pub fn package(
+    b: *std.Build,
+) Package {
+    const module = b.createModule(.{
+        .source_file = .{ .path = thisDir() ++ "/src/main.zig" },
+        .dependencies = &.{},
+    });
+
+    return .{
+        .module = module,
+    };
+}
+
+pub fn build(b: *std.Build) !void {
     const mode = b.standardReleaseOptions();
     const target = b.standardTargetOptions(.{});
 
@@ -13,7 +29,7 @@ pub fn build(b: *Builder) !void {
     test_step.dependOn(&(try testStepShared(b, mode, target)).step);
 }
 
-pub fn testStep(b: *Builder, mode: std.builtin.Mode, target: std.zig.CrossTarget) !*std.build.RunStep {
+pub fn testStep(b: *std.Build, mode: std.builtin.Mode, target: std.zig.CrossTarget) !*std.build.RunStep {
     const main_tests = b.addTestExe("glfw-tests", sdkPath("/src/main.zig"));
     main_tests.setBuildMode(mode);
     main_tests.setTarget(target);
@@ -22,7 +38,7 @@ pub fn testStep(b: *Builder, mode: std.builtin.Mode, target: std.zig.CrossTarget
     return main_tests.run();
 }
 
-fn testStepShared(b: *Builder, mode: std.builtin.Mode, target: std.zig.CrossTarget) !*std.build.RunStep {
+fn testStepShared(b: *std.Build, mode: std.builtin.Mode, target: std.zig.CrossTarget) !*std.build.RunStep {
     const main_tests = b.addTestExe("glfw-tests-shared", sdkPath("/src/main.zig"));
     main_tests.setBuildMode(mode);
     main_tests.setTarget(target);
@@ -65,8 +81,8 @@ pub const pkg = std.build.Pkg{
 };
 
 pub const LinkError = error{FailedToLinkGPU} || BuildError;
-pub fn link(b: *Builder, step: *std.build.LibExeObjStep, options: Options) LinkError!void {
-    const lib = try buildLibrary(b, step.build_mode, step.target, options);
+pub fn link(b: *std.Build, step: *std.build.CompileStep, options: Options) LinkError!void {
+    const lib = try buildLibrary(b, step.optimize, step.target, options);
     step.linkLibrary(lib);
     addGLFWIncludes(step);
     if (options.shared) {
@@ -78,16 +94,14 @@ pub fn link(b: *Builder, step: *std.build.LibExeObjStep, options: Options) LinkE
 }
 
 pub const BuildError = error{CannotEnsureDependency} || std.mem.Allocator.Error;
-fn buildLibrary(b: *Builder, mode: std.builtin.Mode, target: std.zig.CrossTarget, options: Options) BuildError!*std.build.LibExeObjStep {
+fn buildLibrary(b: *std.Build, mode: std.builtin.Mode, target: std.zig.CrossTarget, options: Options) BuildError!*std.build.LibExeObjStep {
     // TODO(build-system): https://github.com/hexops/mach/issues/229#issuecomment-1100958939
     ensureDependencySubmodule(b.allocator, "upstream") catch return error.CannotEnsureDependency;
 
     const lib = if (options.shared)
-        b.addSharedLibrary("glfw", null, .unversioned)
+        b.addSharedLibrary(.{.name = "glfw", .target = target, .optimize = mode})
     else
-        b.addStaticLibrary("glfw", null);
-    lib.setBuildMode(mode);
-    lib.setTarget(target);
+        b.addStaticLibrary(.{.name = "glfw", .target = target, .optimize = mode,});
 
     if (options.shared)
         lib.defineCMacro("_GLFW_BUILD_DLL", null);
@@ -107,7 +121,7 @@ fn addGLFWIncludes(step: *std.build.LibExeObjStep) void {
     step.addIncludePath(sdkPath("/upstream/vulkan_headers/include"));
 }
 
-fn addGLFWSources(b: *Builder, lib: *std.build.LibExeObjStep, options: Options) std.mem.Allocator.Error!void {
+fn addGLFWSources(b: *std.Build, lib: *std.build.LibExeObjStep, options: Options) std.mem.Allocator.Error!void {
     const include_glfw_src = comptime "-I" ++ sdkPath("/upstream/glfw/src");
     switch (lib.target_info.target.os.tag) {
         .windows => lib.addCSourceFiles(&.{
@@ -147,7 +161,7 @@ fn addGLFWSources(b: *Builder, lib: *std.build.LibExeObjStep, options: Options) 
     }
 }
 
-fn linkGLFWDependencies(b: *Builder, step: *std.build.LibExeObjStep, options: Options) void {
+fn linkGLFWDependencies(b: *std.Build, step: *std.build.LibExeObjStep, options: Options) void {
     step.linkLibC();
     system_sdk.include(b, step, options.system_sdk);
     switch (step.target_info.target.os.tag) {
@@ -206,3 +220,8 @@ fn sdkPath(comptime suffix: []const u8) []const u8 {
         break :blk root_dir ++ suffix;
     };
 }
+
+inline fn thisDir() []const u8 {
+    return comptime std.fs.path.dirname(@src().file) orelse ".";
+}
+
